@@ -11,7 +11,7 @@ import (
     "sync"
 
     "github.com/gin-gonic/gin"
-    "github.com/komari-monitor/komari/api"
+    "github.com/komari-monitor/komari/web/api"
     "github.com/komari-monitor/komari/database/dbcore"  // 新增导入
 )
 
