@@ -306,3 +306,56 @@ func GetDBInstance() *gorm.DB {
 
 	return instance
 }
+
+// RestoreBackupAndReinit 热恢复备份并重新初始化数据库，无需重启进程。
+// 调用前需确保 ./data/backup.zip 已就位。
+func RestoreBackupAndReinit() error {
+    backupZipPath := filepath.Join(".", "data", "backup.zip")
+    if _, statErr := os.Stat(backupZipPath); statErr != nil {
+        return fmt.Errorf("backup.zip not found: %w", statErr)
+    }
+
+    // 1. 关闭并释放现有数据库连接
+    if instance != nil {
+        sqlDB, err := instance.DB()
+        if err == nil {
+            _ = sqlDB.Close()
+        }
+        instance = nil
+    }
+    // 重置 once，允许 GetDBInstance() 重新执行完整初始化流程
+    once = sync.Once{}
+
+    // 2. 备份当前 data 目录（可选但推荐）
+    if err := os.MkdirAll("./backup", 0755); err != nil {
+        log.Printf("[restore] failed to create backup dir: %v", err)
+    } else {
+        tsName := time.Now().Format("20060102-150405")
+        bakPath := filepath.Join("./backup", fmt.Sprintf("%s.zip", tsName))
+        if zipErr := zipDirectoryExcluding("./data", bakPath, map[string]struct{}{backupZipPath: {}}); zipErr != nil {
+            log.Printf("[restore] failed to zip current data: %v", zipErr)
+        } else {
+            log.Printf("[restore] current data zipped to %s", bakPath)
+        }
+    }
+
+    // 3. 删除 data 目录中除 backup.zip 之外的所有文件
+    if err := removeAllInDirExcept("./data", map[string]struct{}{backupZipPath: {}}); err != nil {
+        return fmt.Errorf("failed to cleanup data dir: %w", err)
+    }
+
+    // 4. 解压 backup.zip 到 data 目录
+    if err := unzipToDir(backupZipPath, "./data"); err != nil {
+        return fmt.Errorf("failed to unzip backup: %w", err)
+    }
+    log.Printf("[restore] backup.zip extracted to ./data")
+
+    // 5. 删除 backup.zip 和标记文件
+    _ = os.Remove(backupZipPath)
+    _ = os.Remove("./data/komari-backup-markup")
+
+    // 6. 重新初始化数据库（触发重置后的 once）
+    GetDBInstance()
+    log.Printf("[restore] database reinitialized successfully")
+    return nil
+}

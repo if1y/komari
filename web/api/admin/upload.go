@@ -1,19 +1,18 @@
 package admin
 
 import (
-	"archive/zip"
-	"fmt"
-	"io"
-	"log"
-	"net/http"
-	"os"
-	"path/filepath"
-	"strings"
-	"sync"
-	"time"
+    "fmt"
+    "io"
+    "archive/zip"
+    "net/http"
+    "os"
+    "path/filepath"
+    "strings"
+    "sync"
 
-	"github.com/gin-gonic/gin"
-	"github.com/komari-monitor/komari/web/api"
+    "github.com/gin-gonic/gin"
+    "github.com/komari-monitor/komari/api"
+    "github.com/komari-monitor/komari/database/dbcore"  // 新增导入
 )
 
 // 只有一个备份恢复操作在进行
@@ -22,25 +21,25 @@ var restoreMutex sync.Mutex
 // UploadBackup 用于接收上传的备份文件并将其内容恢复到原始位置
 func UploadBackup(c *gin.Context) {
 	// 尝试获取锁，如果已有恢复操作在进行，则立即返回错误
-	if !restoreMutex.TryLock() {
-		api.RespondError(c, http.StatusConflict, "Another restore operation is already in progress")
-		return
-	}
-	defer restoreMutex.Unlock()
+    if !restoreMutex.TryLock() {
+        api.RespondError(c, http.StatusConflict, "Another restore operation is already in progress")
+        return
+    }
+    defer restoreMutex.Unlock()
 
 	// 获取上传的文件
-	file, header, err := c.Request.FormFile("backup")
-	if err != nil {
-		api.RespondError(c, http.StatusBadRequest, fmt.Sprintf("Error getting uploaded file: %v", err))
-		return
-	}
-	defer file.Close()
+    file, header, err := c.Request.FormFile("backup")
+    if err != nil {
+        api.RespondError(c, http.StatusBadRequest, fmt.Sprintf("Error getting uploaded file: %v", err))
+        return
+    }
+    defer file.Close()
 
 	// 检查文件是否为zip格式
-	if !strings.HasSuffix(strings.ToLower(header.Filename), ".zip") {
-		api.RespondError(c, http.StatusBadRequest, "Uploaded file must be a ZIP archive")
-		return
-	}
+    if !strings.HasSuffix(strings.ToLower(header.Filename), ".zip") {
+        api.RespondError(c, http.StatusBadRequest, "Uploaded file must be a ZIP archive")
+        return
+    }
 
 	// 确保data目录存在
 	if err := os.MkdirAll("./data", 0755); err != nil {
@@ -110,16 +109,14 @@ func UploadBackup(c *gin.Context) {
 		out.Close()
 	}
 
-	// 返回：已保存备份，重启后将自动恢复
-	c.JSON(http.StatusOK, gin.H{
-		"status":  "success",
-		"message": "Backup uploaded successfully. The service will restart and apply the backup.",
-		"path":    "./data/backup.zip",
-	})
+    // 直接热恢复，不再 os.Exit(0)
+    if err := dbcore.RestoreBackupAndReinit(); err != nil {
+        api.RespondError(c, http.StatusInternalServerError, fmt.Sprintf("Backup uploaded but restore failed: %v", err))
+        return
+    }
 
-	go func() {
-		log.Println("Backup uploaded, restarting service in 2 seconds to apply on startup...")
-		time.Sleep(2 * time.Second)
-		os.Exit(0)
-	}()
+    c.JSON(http.StatusOK, gin.H{
+        "status":  "success",
+        "message": "Backup restored successfully. Service is running with restored data.",
+    })
 }
